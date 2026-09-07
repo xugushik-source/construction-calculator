@@ -2,14 +2,17 @@
 
 import {useMemo,useState} from "react";
 import {Pencil,Plus,Search,Trash2,X} from "lucide-react";
+import {useLanguage} from "@/components/language-provider";
+import {tr} from "@/lib/i18n";
 
 export type CatalogEntry={id:string;section:string;category:string;name:string;unit:string;laborCost:number;materialCost:number;defaultMarkup:number;active:boolean};
 type Payload=Record<string,unknown>;
 
 export function CatalogPanel({rows,currency,act}:{rows:CatalogEntry[];currency:string;act:(action:string,payload:Payload)=>Promise<void>}){
+ const {language}=useLanguage();
  const [search,setSearch]=useState(""),[section,setSection]=useState("all"),[editing,setEditing]=useState<CatalogEntry|null|undefined>(undefined);
  const sections=useMemo(()=>[...new Set(rows.map(row=>row.section))].sort(),[rows]);
- const filtered=rows.filter(row=>(section==="all"||row.section===section)&&`${row.section} ${row.category} ${row.name}`.toLowerCase().includes(search.toLowerCase()));
+ const filtered=rows.filter(row=>(section==="all"||row.section===section)&&`${row.section} ${row.category} ${row.name} ${tr(row.section,language)} ${tr(row.category,language)} ${tr(row.name,language)}`.toLowerCase().includes(search.toLowerCase()));
  return <div className="page catalog-page">
   <div className="catalog-heading"><div><h2>Work and price catalog</h2><p>Choose a work in an estimate and your saved unit and prices will be filled in automatically.</p></div><button className="primary" onClick={()=>setEditing(null)}><Plus/>Add work</button></div>
   <div className="toolbar catalog-toolbar"><label><Search/><input value={search} placeholder="Search works" onChange={event=>setSearch(event.target.value)}/></label><select value={section} onChange={event=>setSection(event.target.value)}><option value="all">All sections</option>{sections.map(value=><option key={value} value={value}>{value}</option>)}</select></div>
