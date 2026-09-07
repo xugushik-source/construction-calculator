@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `catalog_version` integer DEFAULT 0 NOT NULL;
