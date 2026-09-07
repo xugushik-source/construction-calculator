@@ -1,3 +1,3 @@
-import { requireChatGPTUser } from "./chatgpt-auth";import BuildEstimateApp from "@/components/buildestimate-app";
+import {cookies} from "next/headers";import {requireChatGPTUser} from "./chatgpt-auth";import BuildEstimateApp from "@/components/buildestimate-app";import {LanguageProvider} from "@/components/language-provider";import type {Language} from "@/lib/i18n";
 export const dynamic="force-dynamic";
-export default async function Home(){const user=await requireChatGPTUser("/");return <BuildEstimateApp user={{name:user.displayName,email:user.email}}/>}
+export default async function Home(){const user=await requireChatGPTUser("/"),cookieStore=await cookies(),saved=cookieStore.get("buildestimate_lang")?.value,initialLanguage:Language=saved==="ru"||saved==="es"?saved:"en";return <LanguageProvider initialLanguage={initialLanguage}><BuildEstimateApp user={{name:user.displayName,email:user.email}}/></LanguageProvider>}
