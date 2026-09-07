@@ -3,7 +3,7 @@ import {headers} from "next/headers";
 import {z} from "zod";
 import {catalogSeed} from "@/lib/catalog-seed";
 
-const categories=["Demolition","Plastering","Painting","Drywall","Electrical","Plumbing","Tiling","Flooring","Doors","Windows","Roofing","Facade","Insulation","Concrete","Masonry","HVAC","Other"];
+const categories=[...new Set(catalogSeed.map(([,category])=>category))];
 const uid=()=>crypto.randomUUID();
 
 async function identity(){
@@ -26,11 +26,29 @@ async function tenant(){
    db.prepare("INSERT INTO settings(id,company_id) VALUES(?,?)").bind(sid,cid),
    db.prepare("INSERT INTO subscriptions(id,company_id,plan,status) VALUES(?,?,?,?)").bind(subid,cid,"business","active"),
    ...categories.map(name=>db.prepare("INSERT INTO work_categories(id,company_id,name) VALUES(?,?,?)").bind(categoryIds.get(name),cid,name)),
-   ...catalogSeed.map(([category,name,unit,labor,material])=>db.prepare("INSERT INTO work_items(id,company_id,category_id,name,unit,labor_cost,material_cost,default_markup,active) VALUES(?,?,?,?,?,?,?,?,1)").bind(uid(),cid,categoryIds.get(category),name,unit,labor,material,.3)),
+   ...catalogSeed.map(([section,category,name,unit,labor,material])=>db.prepare("INSERT INTO work_items(id,company_id,category_id,section,name,unit,labor_cost,material_cost,default_markup,active) VALUES(?,?,?,?,?,?,?,?,?,1)").bind(uid(),cid,categoryIds.get(category),section,name,unit,labor,material,.3)),
   ]);
   company=await db.prepare("SELECT * FROM companies WHERE id=?").bind(cid).first<Record<string,unknown>>();
  }
- return {db,companyId:String(company!.id),company};
+ const companyId=String(company!.id);
+ const seedState=await db.prepare("SELECT catalog_version FROM settings WHERE company_id=?").bind(companyId).first<{catalog_version:number}>();
+ if(Number(seedState?.catalog_version||0)<1){
+  const storedCategories=await db.prepare("SELECT id,name FROM work_categories WHERE company_id=?").bind(companyId).all<{id:string;name:string}>();
+  const categoryIds=new Map(storedCategories.results.map(row=>[row.name,row.id]));
+  const categoryStatements=[];
+  for(const category of categories)if(!categoryIds.has(category)){const categoryId=uid();categoryIds.set(category,categoryId);categoryStatements.push(db.prepare("INSERT INTO work_categories(id,company_id,name) VALUES(?,?,?)").bind(categoryId,companyId,category))}
+  for(let offset=0;offset<categoryStatements.length;offset+=50)await db.batch(categoryStatements.slice(offset,offset+50));
+  const storedItems=await db.prepare("SELECT id,name FROM work_items WHERE company_id=?").bind(companyId).all<{id:string;name:string}>();
+  const itemIds=new Map(storedItems.results.map(row=>[row.name,row.id]));
+  const itemStatements=catalogSeed.map(([section,category,name,unit,labor,material])=>{
+   const existingId=itemIds.get(name);
+   if(existingId)return db.prepare("UPDATE work_items SET section=?,category_id=? WHERE id=? AND company_id=?").bind(section,categoryIds.get(category),existingId,companyId);
+   return db.prepare("INSERT INTO work_items(id,company_id,category_id,section,name,unit,labor_cost,material_cost,default_markup,active) VALUES(?,?,?,?,?,?,?,?,?,1)").bind(uid(),companyId,categoryIds.get(category),section,name,unit,labor,material,.3);
+  });
+  for(let offset=0;offset<itemStatements.length;offset+=50)await db.batch(itemStatements.slice(offset,offset+50));
+  await db.prepare("UPDATE settings SET catalog_version=1 WHERE company_id=?").bind(companyId).run();
+ }
+ return {db,companyId,company};
 }
 
 export async function GET(){
@@ -58,6 +76,14 @@ export async function POST(req:Request){
   const {action,payload}=actionSchema.parse(await req.json());
   const {db,companyId}=await tenant();
   const p=payload as Record<string,unknown>;
+  const categoryIdFor=async(name:string)=>{
+   const safeName=name.trim()||"Other";
+   const existing=await db.prepare("SELECT id FROM work_categories WHERE company_id=? AND name=?").bind(companyId,safeName).first<{id:string}>();
+   if(existing)return existing.id;
+   const categoryId=uid();
+   await db.prepare("INSERT INTO work_categories(id,company_id,name) VALUES(?,?,?)").bind(categoryId,companyId,safeName).run();
+   return categoryId;
+  };
 
   if(action==="client.create"){
    const clientId=uid();
@@ -85,6 +111,30 @@ export async function POST(req:Request){
    );
    await db.batch(statements);
    return Response.json({ok:true,projectId,estimateId,clientId});
+  }
+
+  if(action==="catalog.create"){
+   const name=String(p.name||"").trim();
+   if(!name)throw new Error("Work name is required");
+   const category=String(p.category||"Other");
+   const categoryId=await categoryIdFor(category);
+   const catalogItemId=uid();
+   await db.prepare("INSERT INTO work_items(id,company_id,category_id,section,name,unit,labor_cost,material_cost,default_markup,active) VALUES(?,?,?,?,?,?,?,?,?,1)").bind(catalogItemId,companyId,categoryId,String(p.section||"Other works"),name,String(p.unit||"unit"),Number(p.laborCost||0),Number(p.materialCost||0),Number(p.defaultMarkup||0)).run();
+   return Response.json({ok:true,catalogItemId});
+  }
+
+  if(action==="catalog.update"){
+   const id=String(p.id||"");
+   const name=String(p.name||"").trim();
+   if(!id||!name)throw new Error("Work name is required");
+   const categoryId=await categoryIdFor(String(p.category||"Other"));
+   await db.prepare("UPDATE work_items SET category_id=?,section=?,name=?,unit=?,labor_cost=?,material_cost=?,default_markup=?,active=? WHERE id=? AND company_id=?").bind(categoryId,String(p.section||"Other works"),name,String(p.unit||"unit"),Number(p.laborCost||0),Number(p.materialCost||0),Number(p.defaultMarkup||0),p.active===false?0:1,id,companyId).run();
+   return Response.json({ok:true});
+  }
+
+  if(action==="catalog.delete"){
+   await db.prepare("DELETE FROM work_items WHERE id=? AND company_id=?").bind(String(p.id||""),companyId).run();
+   return Response.json({ok:true});
   }
 
   if(action==="item.create"){
